@@ -1,6 +1,12 @@
 @{
     Title = 'Lab 1A: Deploy a Security Management Server'
     Steps = @(
+        @{ Desc = '1A-1: Switch A-SMS admin shell to /bin/bash (needed before files can be copied with SCP)'
+           Type = 'clish'; Host = 'A-SMS'
+           Commands = @'
+set user admin shell /bin/bash
+save config
+'@ }
         @{ Desc = '1A-1.12: Copy A-SMS_ftw.sh from A-GUI to A-SMS:/home/admin (WinSCP equivalent)'
            Type = 'copy'; Host = 'A-SMS'
            Local  = 'A-SMS_ftw.sh'
@@ -9,12 +15,6 @@
            Type = 'copy'; Host = 'A-SMS'
            Local  = 'A-SMS_config.sh'
            Remote = '/home/admin/A-SMS_config.sh' }
-        @{ Desc = '1A-1: Switch A-SMS admin shell to /bin/bash (lab does this before scripting)'
-           Type = 'clish'; Host = 'A-SMS'
-           Commands = @'
-set user admin shell /bin/bash
-save config
-'@ }
         @{ Desc = '1A-1: First Time Configuration Wizard via config_system (dry-run, then live)'
            Type = 'bash'; Host = 'A-SMS'; TimeoutNote = 20
            Commands = @'
