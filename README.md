@@ -109,10 +109,6 @@ powershell -ExecutionPolicy Bypass -File Build-Release.ps1
 
 ## Notes
 
-- The lab password (`Chkp!234`) is in `config.psd1`, as it is in the courseware. Sandbox use only.
 - Re-running a lab gives WARN results for objects that already exist. For a clean run, revert the pod snapshot first.
-- The runner never touches the Border-Router.
 
 ---
-*Lab content source: DOC-Lab Commands-CCAS-R81.20-V1.0 (Check Point Learning &
-Training). For Authorized Training Center use.*
