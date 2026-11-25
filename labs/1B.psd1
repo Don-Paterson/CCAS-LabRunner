@@ -49,6 +49,8 @@ Grub hash:           grub2-mkpasswd-pbkdf2
 '@ }
         @{ Desc = '1B-3: Package custom content and run Blink (long: image deploy + reboot)'
            Type = 'bash'; Host = 'A-GW'; TimeoutNote = 25
+           # Blink reboots A-GW; the wait is the next step
+           ExpectDisconnect = $true
            Commands = @'
 cd /var/log/blink_working
 dos2unix answers.xml clish_commands.txt install_content.sh
@@ -60,11 +62,12 @@ tar -zcvf blink_custom_content.tgz install_content.sh clish_commands.txt
         @{ Desc = '1B-3: Wait for A-GW to reboot after Blink'
            Type = 'waitreboot'; Host = 'A-GW'; InitialSleep = 120; TimeoutMin = 40 }
         @{ Desc = '1B-3: Verify A-GW configuration (route / NTP / interfaces)'
-           Type = 'bash'; Host = 'A-GW'
+           # clish type: works whether Blink left the admin shell as clish or bash
+           Type = 'clish'; Host = 'A-GW'
            Commands = @'
-clish -c "show route"
-clish -c "show ntp servers"
-clish -c "show interfaces"
+show route
+show ntp servers
+show interfaces
 '@ }
     )
 }

@@ -57,7 +57,10 @@ summary table, and is marked `[done]` only if no step failed.
 - SSH host keys that change after a FTW, Blink or pod reset are replaced automatically.
 - The cached API key is tested at start-up and in Preflight. Lab 2A deletes and recreates `api_admin` if it already exists, so a fresh key is always issued.
 - API keys are masked in the console and the log (menu **k** shows it on request).
-- After a reboot the runner waits until SSH logins work, not just ping.
+- Reboots are detected on the SSH port, not ping (a gateway policy can drop ping): the runner waits for the host to go down, then for SSH logins to work again.
+- Steps that reboot their host (1A first-time setup, 1B Blink) treat the dropped SSH session as expected instead of FAIL.
+- clish steps send one command per SSH call and check the login shell each time; under bash the command is wrapped in `clish -c`.
+- `CLINFR` clish errors (expected in 1A-2's `load configuration` with on-failure continue) count as WARN.
 - Runs on Windows PowerShell 5.1 as well as 7, from a `.cmd` launcher.
 - Lab steps are in `labs\*.psd1`; settings (hosts, password, version, JHF and Blink file names, FTW wait) are in `config.psd1`.
 - Fixes carried from the courseware: timezones `America/St_Johns` and `Pacific/Honolulu` (no spaces), "Internal" typo in 4A-2.

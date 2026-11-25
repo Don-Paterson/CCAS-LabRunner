@@ -57,6 +57,7 @@ $Script:FallbackDir = [Environment]::ExpandEnvironmentVariables($Script:Cfg.Fall
 $Script:Paced = -not $Auto
 $Script:Quit  = $false
 $Script:KeysChecked = @{}        # IP -> $true once SSH has been confirmed this run
+$Script:RebootSeen  = @{}        # IP -> $true when a step saw the host drop SSH to reboot
 $Script:ApiKeyStatus = 'not checked'
 
 $Script:StateDir  = Join-Path $env:USERPROFILE '.ccas-labrunner-v3'
@@ -232,16 +233,40 @@ function Test-Ping {
     } catch { return $false }
 }
 
+function Test-Port {
+    # TCP connect test - works even when a gateway policy drops ping.
+    param([string]$Ip, [int]$Port = 22, [int]$TimeoutMs = 2000)
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect($Ip, $Port, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne($TimeoutMs) -and $client.Connected) { return $true }
+        return $false
+    } catch { return $false } finally { $client.Close() }
+}
+
 function Wait-HostReboot {
-    # Waits for the host to go down, then until SSH logins work again.
+    # Waits for the host to go down (SSH port closed), then until SSH logins
+    # work again. If a step already saw the host drop the connection for a
+    # reboot, the 'go down' wait is skipped.
     param([string]$HostName, [int]$InitialSleep = 60, [int]$TimeoutMin = 30)
     $ip = $Script:Hosts[$HostName]
     Write-Log "  Waiting for $HostName ($ip) to reboot (timeout ${TimeoutMin} min)..." Yellow
+    $deadline = (Get-Date).AddMinutes($TimeoutMin)
+    if ($Script:RebootSeen.ContainsKey($ip)) {
+        $Script:RebootSeen.Remove($ip)
+    } else {
+        $wentDown = $false
+        while ((Get-Date) -lt $deadline) {
+            if (-not (Test-Port -Ip $ip)) { $wentDown = $true; break }
+            Start-Sleep -Seconds 10
+        }
+        if (-not $wentDown) { Write-Log "  $HostName did not go down within ${TimeoutMin} minutes." Red; return $false }
+        Write-Log "  $HostName is down; waiting for it to come back..." Yellow
+    }
     Start-Sleep -Seconds $InitialSleep
     $Script:KeysChecked.Remove($ip)
-    $deadline = (Get-Date).AddMinutes($TimeoutMin)
     while ((Get-Date) -lt $deadline) {
-        if ((Test-Ping $ip) -and (Test-SshHost -Ip $ip -Quiet)) {
+        if ((Test-Port -Ip $ip) -and (Test-SshHost -Ip $ip -Quiet)) {
             Write-Log "  $HostName answers SSH again; allowing 60 s for services to settle." Yellow
             Start-Sleep -Seconds 60
             return $true
@@ -252,11 +277,43 @@ function Wait-HostReboot {
     return $false
 }
 
+function Get-LoginShell {
+    # 'clish' or 'bash' for the admin login shell on a host ($null if unreachable).
+    param([string]$HostName)
+    $r = Invoke-Ssh -HostName $HostName -Commands 'show hostname' -Silent
+    if (-not $r.Connected) { return $null }
+    if ($r.Output -match 'command not found') { return 'bash' }
+    return 'clish'
+}
+
+function Invoke-ClishLines {
+    # Runs clish commands one per SSH call. A clish login shell may only run
+    # the first line of a multi-line command, and the shell can change part
+    # way through (set user admin shell /bin/bash), so the login shell is
+    # checked before every line; under bash the line is wrapped in clish -c.
+    param([string]$HostName, [string]$Commands)
+    $all = @()
+    foreach ($line in ($Commands -split "`r?`n")) {
+        $cmd = $line.Trim()
+        if (-not $cmd -or $cmd.StartsWith('#')) { continue }
+        $shell = Get-LoginShell -HostName $HostName
+        if (-not $shell) { return @{ Output = (($all + 'SSH connection failed') -join "`n"); ExitCode = 255; Connected = $false } }
+        if ($shell -eq 'bash') { $send = 'clish -c "' + $cmd.Replace('"', '\"') + '"' } else { $send = $cmd }
+        Write-Log "  clish ($shell login shell): $cmd" DarkGray
+        $r = Invoke-Ssh -HostName $HostName -Commands $send
+        $all += $r.Output
+    }
+    return @{ Output = ($all -join "`n"); ExitCode = 0; Connected = $true }
+}
+
 # ---------------------------------------------------------------------------
 # Result checking
 # ---------------------------------------------------------------------------
-$Script:WarnPattern = 'not_unique|already exists|More than one object'
-$Script:FailPattern = 'LOGIN FAILED|"code"\s*:\s*"(err_|generic_err)|FATAL ERROR|Network error|Access denied|unmatched double quote|^\s*Failed:|command not found|CLINFR\d+'
+# CLINFR = a clish line that failed; 1A-2 runs load configuration with
+# 'on-failure continue' on purpose, so these are warnings, not failures.
+$Script:WarnPattern = 'not_unique|already exists|More than one object|CLINFR\d+'
+$Script:FailPattern = 'LOGIN FAILED|"code"\s*:\s*"(err_|generic_err)|FATAL ERROR|Network error|Access denied|unmatched double quote|^\s*Failed:|command not found'
+$Script:DisconnectPattern = 'unexpectedly closed|Connection reset|connection abort|Remote side closed|Network error'
 
 function Get-StepResult {
     # PASS / WARN / FAIL from command output. Lines that only say an object
@@ -348,8 +405,21 @@ function Invoke-Step {
                 $prefix = New-MgmtSessionPrefix -Extra (Get-Val $Step.SessionExtra '')
                 $cmds = $cmds.Replace('__SESSION__', $prefix)
             }
-            $r = Invoke-Ssh -HostName $Step.Host -Commands $cmds -TimeoutNote (Get-Val $Step.TimeoutNote 0)
+            if ($Step.Type -eq 'clish') {
+                $r = Invoke-ClishLines -HostName $Step.Host -Commands $cmds
+            } else {
+                $r = Invoke-Ssh -HostName $Step.Host -Commands $cmds -TimeoutNote (Get-Val $Step.TimeoutNote 0)
+            }
             if (-not $r.Connected) { return 'FAIL' }
+            if ($Step.ExpectDisconnect -and $r.Output -match $Script:DisconnectPattern) {
+                # The host closed the session because it is rebooting - expected here.
+                Write-Log "  $($Step.Host) closed the connection - expected, it is rebooting." Yellow
+                $r.Output = (($r.Output -split "`n") | Where-Object { $_ -notmatch $Script:DisconnectPattern }) -join "`n"
+                $Script:RebootSeen[$Script:Hosts[$Step.Host]] = $true
+                if ($Step.WaitIfDisconnected) {
+                    if (-not (Wait-HostReboot -HostName $Step.Host -InitialSleep 90 -TimeoutMin 30)) { return 'FAIL' }
+                }
+            }
             if ($Step.Capture) {
                 if ($r.Output -match $Step.Capture.Pattern) {
                     $state = Get-State

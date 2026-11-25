@@ -17,6 +17,8 @@ save config
            Remote = '/home/admin/A-SMS_config.sh' }
         @{ Desc = '1A-1: First Time Configuration Wizard via config_system (dry-run, then live)'
            Type = 'bash'; Host = 'A-SMS'; TimeoutNote = 20
+           # config_system may reboot (reboot_if_required) - then wait for A-SMS
+           ExpectDisconnect = $true; WaitIfDisconnected = $true
            Commands = @'
 cd /home/admin
 config_system -f A-SMS_ftw.sh --dry-run
