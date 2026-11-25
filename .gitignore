@@ -1,0 +1,5 @@
+# Courseware scripts are not published - only the standalone zip carries them
+payload/*
+!payload/README.txt
+# Build output
+dist/
